@@ -29,26 +29,191 @@ The Savant Chat critic also acts as a false-positive filter: on a separate
 benchmark dedicated to FP-rejection, the Savant Chat critic **reduces false
 positives by more than 7×**.
 
-## What this benchmark is **not** measuring
+## Methodology and scope
 
-This run is a deliberate **lower bound** on Savant Chat's capability. To keep
-benchmark cost manageable we made two restrictions:
+This run is a deliberate **lower bound** on Savant Chat's capability. We
+restricted scanning to known-vulnerable code regions for two reasons.
 
-1. **Scanning was restricted to the code regions that are already known to be
-   vulnerable.** An unconstrained scan of these projects' full codebases would
-   have cost approximately **\$35,000** to evaluate. The published configuration
-   is roughly **100× cheaper**.
-2. **Deep research branches were pruned** to the directions where the
-   vulnerability actually lives.
+### 1. Responsible disclosure (primary reason)
 
-Both restrictions made the published numbers **worse**, not better. Savant
-Chat's reports are built additively — covering more code never reduces the
-quality of analysis on any individual function. What we lost by pruning is
-*alternate angles of attack* that the wide-deep research process would have
-explored. We cut roughly **99 % of reasoning branches** for this run.
+Savant Chat has high recall on production-quality code. EVMBench audits cover
+real DeFi projects, many of which still run in production. The known
+H-severity bugs (the ground truth in this benchmark) have been patched.
+**Everything else in those repositories has not.**
 
-Commercial customers run the full configuration and consequently get materially
-better results than what this public benchmark shows.
+If we ran the unrestricted scan and published the artifacts — which
+EVMBench's submission protocol requires — we would publish hypotheses about
+previously-undisclosed vulnerabilities in code that is currently deployed and
+unpatched. That is mass uncoordinated vulnerability disclosure across dozens
+of live DeFi protocols, hand-delivered to attackers who read leaderboards. We
+declined.
+
+The artifacts in this repository cover only code regions where the
+ground-truth bug has already been patched. They are safe to publish. The
+full scan output is not.
+
+### 2. Cost (secondary reason)
+
+An unconstrained scan of these projects' full codebases would cost
+approximately **\$35,000** to evaluate. The published configuration is
+roughly **100× cheaper**.
+
+---
+
+Savant Chat's reports are built additively. Covering more code never reduces
+the quality of analysis on any individual function. What we lost by pruning
+is *alternate angles of attack* that the wide-deep research process would
+have explored. We cut roughly **99 %** of reasoning branches for this run.
+
+Commercial customers run the full configuration and consequently get
+materially better results than what this public benchmark shows.
+
+
+## Why this is a strict lower bound, not an upper bound
+
+### ELI5
+
+Imagine you want to find typos in 100 books. Your method: for every page,
+hire an independent proofreader who reads only that page and reports typos.
+Each proofreader is a fresh hire who knows nothing about any other page,
+proofreader, or book.
+
+You know which 3 pages contain the typos you're being graded on. You hire
+3 proofreaders, one per page. You submit their reports. Your score is 82 %.
+
+Now consider what would happen if you had hired 100 proofreaders, one per
+page:
+
+- The 3 proofreaders assigned to the graded pages do exactly the same job.
+  They report the same typos. They do not know any other proofreaders exist.
+- The other 97 proofreaders report typos on their respective pages — some
+  real, some false alarms — but **none of their reports can remove** the
+  reports from the original 3.
+
+The score is "did at least one proofreader find each target typo?" Adding 97
+more proofreaders can only add findings, never remove them. So 82 % with 3
+hires implies **≥ 82 %** with 100 hires. That is why this is a lower bound.
+
+The 97 extra hires would also report real, unpatched typos in books that are
+currently being printed and sold (live DeFi protocols). We chose not to
+publish those.
+
+### Counterarguments and responses
+
+**Q: Doesn't restricting input to known-vulnerable files leak ground truth?
+Your scanner now knows the file has a bug.**
+
+No. The per-region prompt is byte-identical whether the file is part of a
+1-file corpus or a 1,000-file corpus. There is no "this file has a bug" flag
+anywhere in the input. We simply don't spend tokens on files we know
+contribute nothing to the ground-truth metric. The agent's input and
+behavior on each scanned region are unchanged.
+
+**Q: LLMs have attention budgets. Bigger inputs dilute attention; smaller
+inputs are analyzed more carefully.**
+
+There is no shared attention budget across regions. Region X is analyzed by
+an independent LLM call with only region X (plus on-demand cross-reference
+tooling) in its context. Region Y is a separate call. Adding region Y to the
+corpus does not change the prompt, context, or output for region X.
+
+**Q: Cross-file vulnerabilities need related code. Doesn't restricting input
+lose that context?**
+
+The per-region scan is self-contained. Cross-file analysis is the job of the
+wide-deep research process, which fetches related code on demand from the
+full repository. We restricted which regions act as primary anchors, not the
+lookup tooling. For every issue we scored, the relevant cross-file paths
+were reachable.
+
+**Q: You pruned 99 % of reasoning branches "in the direction where the
+vulnerability actually lives". That is oracle access.**
+
+It is. We are not hiding it. The point is that branches are additive: if
+branch A finds the bug and branches B–Z don't, keeping only A produces the
+same hit as keeping all of A–Z. We kept A. The full deep-wide configuration
+keeps A through Z. By set inclusion, the full configuration's hits are a
+superset of ours. Recall is monotone non-decreasing in the set of branches
+kept.
+
+**Q: What if pruning removed branches that would have produced extra hits?**
+
+It cannot reduce our measured 82 % — that is what we got with the pruned
+set. Adding the removed branches back can only add hypotheses (additivity).
+So full = pruned + extra ≥ pruned.
+
+**Q: What if your critic behaves differently when given more candidates?**
+
+The critic is a stateless per-hypothesis LLM call. It takes (hypothesis,
+ground-truth description) and returns match / no-match. There is no ranking,
+no top-K cutoff, no cross-hypothesis context. Scaling the candidate set does
+not change the verdict on any individual hypothesis.
+
+**Q: Could false positives on other files outcompete true positives for the
+critic's attention?**
+
+There is no competition. Each hypothesis is judged in isolation. A
+hypothesis that is a true positive for issue I does not change verdict if
+another hypothesis is a false positive elsewhere.
+
+**Q: Maybe EVMBench's critic has a per-issue limit on how many hypotheses it
+will evaluate.**
+
+It does not. The critic evaluates every hypothesis submitted, independently.
+A full run produces more hypotheses; the critic evaluates them all. More
+hypotheses = more chances to match an issue, never fewer.
+
+**Q: How do we know your architecture is genuinely per-region independent?
+Maybe there is coupling you have not noticed.**
+
+The per-region pipeline is one LLM call with one prompt template, applied
+independently. The architectural claim is testable: run the pipeline on a
+single region in isolation versus as part of a larger corpus, and compare
+outputs. Demonstrating this for a third party costs on the order of \$200,
+not \$35,000.
+
+**Q: If your architecture is truly additive, why does pruning save 100× cost?**
+
+Cost scales with input size; recall does not. Most code in any repository is
+bug-free. The full corpus is dominated by bug-free regions that consume
+per-region budget while producing no true positive for any ground-truth
+issue. Pruning bug-free regions removes most of the cost while removing
+none of the recall on the issues being scored.
+
+**Q: Could a full scan find bugs the auditors missed and somehow inflate
+your score?**
+
+No. The hit metric matches hypotheses against the issue's ground-truth
+description. Discovering previously-unknown bugs produces hypotheses that
+don't match any ground-truth issue — they don't contribute to the score.
+(They would be valuable to the affected projects and dangerous to publish;
+see *Responsible disclosure* above.)
+
+**Q: Is the wide-deep research itself selective? If so, full ≠ pruned + all
+other branches.**
+
+It is not selective at run time. It explores directions proportional to
+corpus size, which is why a full run costs \$35k on this corpus. Our pruning
+was a manual override done for this benchmark, removing branches we knew to
+be unrelated to ground truth. Without our override, the system explores all
+directions.
+
+**Q: Isn't "we would score the same on the full run" exactly what every
+cherry-picker claims?**
+
+It would be, for architectures with global state or cross-region coupling.
+Ours has neither. The claim is falsifiable by inspecting the per-region
+pipeline — one LLM call, one prompt template, applied independently per
+region. Systems that score higher on subsets than on full sets do so because
+of global state (ranking, attention budget, hypothesis competition). Ours
+has none of those.
+
+**Q: Why should we trust this without seeing the official full run?**
+
+You do not have to trust it. We are willing to demonstrate the architectural
+property on a small sample to any third party. We are not willing to run the
+full corpus and publish the artifacts, for the responsible-disclosure reason
+above.
 
 ## Files
 
